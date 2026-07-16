@@ -158,7 +158,7 @@ app.post("/api/register", async (req, res) => {
 // --- CRON JOBS ---
 
 // 2. The 2:00 PM Batch Scrape
-cron.schedule("0 14 * * *", async () => {
+cron.schedule("* * * * *", async () => {
   console.log("⏰ 2:00 PM: Starting batch scrape...");
   const users = await User.find({});
   todaysSchedules = []; // Reset daily schedules
