@@ -17,7 +17,7 @@ export default function App() {
     try {
       // Change localhost to your Render URL when deployed
       const res = await axios.post(
-        "http://localhost:3001/api/register",
+        "https://greyhr-backend.onrender.com/api/register",
         credentials,
       );
       if (res.data.success) {
