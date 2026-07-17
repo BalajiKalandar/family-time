@@ -12,7 +12,7 @@ const TelegramBot = TelegramBotModule.default || TelegramBotModule;
 const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
 let bot;
 if (telegramToken) {
-  bot = new TelegramBot(telegramToken, { polling: true });
+  bot = new TelegramBot(telegramToke);
   bot.on("polling_error", (error) =>
     console.error("Telegram Polling Error:", error.message),
   );
@@ -71,29 +71,60 @@ const GREYTHR_URL =
   "https://ceinsys-tech.greythr.com/v3/portal/ess/attendance/attendance-info";
 
 async function scrapeAttendance(username, password) {
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
+  const context = await browser.newContext({
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  });
+  const page = await context.newPage();
+
   try {
     console.log(`[${username}] Logging into greyHR...`);
-    await page.goto("https://ceinsys-tech.greythr.com/");
+    await page.goto("https://ceinsys-tech.greythr.com/", {
+      waitUntil: "domcontentloaded",
+    });
+
     await page.fill("#username", username);
     await page.fill("#password", password);
     await page.click(
       "xpath=/html/body/app-root/uas-portal/div/div/main/div/section/div[1]/o-auth/section/div/app-login/section/div/div/div/form/div[4]/button",
     );
 
+    // Wait for login to process
+    await page.waitForTimeout(8000);
+
+    console.log(`[${username}] Navigating to attendance page...`);
+    await page.goto(GREYTHR_URL, { waitUntil: "domcontentloaded" });
+
+    // Wait a bit for the Angular app to start rendering
     await page.waitForTimeout(5000);
-    await page.goto(GREYTHR_URL);
-    await page.waitForTimeout(4000);
 
     const inTimeXPath =
       "xpath=/html/body/app/ng-component/div/div/div[2]/div/gt-attendance-info-calendar/div[1]/div[2]/div[2]/div/div[5]/accordion/accordion-group/div/div[2]/div/table[1]/tbody/tr/td[1]/p[1]";
-    const inTime = await page.textContent(inTimeXPath).catch(() => null);
-    const attendanceStatus = "Normal"; // Default for now
+
+    let inTime = null;
+
+    // Retry mechanism: Try 3 times to find the element (Cloud servers are slow)
+    for (let i = 0; i < 3; i++) {
+      console.log(`[${username}] Attempt ${i + 1} to find In-Time...`);
+      inTime = await page.textContent(inTimeXPath).catch(() => null);
+
+      if (inTime) {
+        console.log(`[${username}] Found In-Time successfully!`);
+        break; // Exit loop if found
+      }
+      await page.waitForTimeout(3000); // Wait 3s and try again
+    }
+
+    const attendanceStatus = "Normal";
 
     if (!inTime) {
-      await page.screenshot({ path: `error-${username}.png` });
-      throw new Error("Could not find In-Time.");
+      throw new Error(
+        "Could not find In-Time after multiple attempts. Page didn't load fully.",
+      );
     }
 
     await browser.close();
