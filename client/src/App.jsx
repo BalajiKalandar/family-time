@@ -8,23 +8,39 @@ export default function App() {
     password: "",
     chatId: "",
   });
+  const [testNow, setTestNow] = useState(false); // Checkbox state
   const [loading, setLoading] = useState(false);
   const [registered, setRegistered] = useState(false);
+  const [serverMessage, setServerMessage] = useState("");
+  const [error, setError] = useState("");
 
   const handleRegister = async (e) => {
     e.preventDefault();
     setLoading(true);
+    setError("");
+    setServerMessage("");
+
     try {
-      // Change localhost to your Render URL when deployed
+      // Send testNow state to backend
       const res = await axios.post(
         "https://greyhr-backend.onrender.com/api/register",
-        credentials,
+        {
+          ...credentials,
+          testNow,
+        },
       );
+
       if (res.data.success) {
+        setServerMessage(res.data.message);
         setRegistered(true);
       }
     } catch (err) {
-      alert("Registration failed. Check console.");
+      // 2. Handle "User already exists" error
+      if (err.response && err.response.status === 409) {
+        setError(err.response.data.error);
+      } else {
+        setError("Registration failed. Please try again.");
+      }
       console.error(err);
     }
     setLoading(false);
@@ -46,6 +62,13 @@ export default function App() {
               Enter details once. You'll get Telegram alerts automatically every
               day.
             </p>
+
+            {error && (
+              <div className="bg-red-500/20 text-red-400 p-3 rounded text-sm text-center">
+                {error}
+              </div>
+            )}
+
             <input
               type="text"
               placeholder="greyHR Username"
@@ -73,6 +96,25 @@ export default function App() {
                 setCredentials({ ...credentials, chatId: e.target.value })
               }
             />
+
+            {/* 1. Checkbox for testing pipeline */}
+            <div className="flex items-center bg-gray-700 p-3 rounded">
+              <input
+                type="checkbox"
+                id="testNow"
+                className="w-4 h-4 mr-3 accent-blue-500"
+                checked={testNow}
+                onChange={(e) => setTestNow(e.target.checked)}
+              />
+              <label
+                htmlFor="testNow"
+                className="text-sm text-gray-300 cursor-pointer"
+              >
+                I am in the office right now (Verify credentials & get Out-Time
+                instantly)
+              </label>
+            </div>
+
             <motion.button
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
@@ -93,14 +135,15 @@ export default function App() {
             </motion.div>
             <h2 className="text-xl text-green-400">Registration Complete!</h2>
             <div className="text-sm text-gray-400 mt-4">
-              Your password has been encrypted and saved securely.
+              {serverMessage}
               <br />
               <br />
               Starting tomorrow, you will receive automatic Telegram
-              notifications at 2:00 PM and 10 minutes before your out-time.
+              notifications at 2:00 PM, 10 mins before, and 2 mins before your
+              out-time.
               <br />
               <br />
-              <strong>You can safely close this page and never return.</strong>
+              <strong>You can safely close this page.</strong>
             </div>
           </div>
         )}

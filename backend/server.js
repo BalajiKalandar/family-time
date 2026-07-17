@@ -128,29 +128,62 @@ app.use(express.json());
 
 // 1. Registration Endpoint (User uses this once)
 app.post("/api/register", async (req, res) => {
-  const { username, password, chatId } = req.body;
+  const { username, password, chatId, testNow } = req.body;
   if (!username || !password || !chatId)
     return res.status(400).json({ error: "Missing fields" });
 
   try {
-    const encryptedPassword = encrypt(password);
+    // 2. Check if user already exists
+    const existingUser = await User.findOne({ greythrUsername: username });
+    if (existingUser) {
+      return res
+        .status(409)
+        .json({ error: "User already exists with this Employee ID." });
+    }
 
-    // Update existing user or create new one
-    await User.findOneAndUpdate(
-      { greythrUsername: username },
-      {
-        greythrUsername: username,
-        greyhrPassword: encryptedPassword,
-        telegramChatId: chatId,
-      },
-      { upsert: true, new: true },
-    );
+    // Encrypt and save new user
+    const encryptedPassword = encrypt(password);
+    const newUser = new User({
+      greythrUsername: username,
+      greyhrPassword: encryptedPassword,
+      telegramChatId: chatId,
+    });
+    await newUser.save();
+
+    // 1. If user said "Yes, I'm in the office", test the pipeline immediately
+    if (testNow) {
+      try {
+        const { inTime, attendanceStatus } = await scrapeAttendance(
+          username,
+          password,
+        );
+        const outTime = calculateOutTime(inTime, attendanceStatus);
+
+        // Send confirmation Telegram message
+        sendTelegramMessage(
+          chatId,
+          `✅ Credentials Verified! You are currently in office.\nIn-Time: ${inTime}\nOut-Time: ${outTime}`,
+        );
+
+        return res.json({
+          success: true,
+          message: "Registered and tested successfully! Check your Telegram.",
+        });
+      } catch (scrapeErr) {
+        return res.json({
+          success: true,
+          message:
+            "Registered, but couldn't scrape right now. Are you in office?",
+        });
+      }
+    }
 
     res.json({
       success: true,
       message: "Registered successfully! You can close this app forever.",
     });
   } catch (err) {
+    console.error("Registration error:", err);
     res.status(500).json({ error: "Database error" });
   }
 });
@@ -185,6 +218,7 @@ cron.schedule("0 14 * * *", async () => {
         outTime: outTime,
         outTimeMs: outDate.getTime(),
         sent10MinWarning: false,
+        sent2MinWarning: false,
       });
 
       // Send 2:00 PM Message
@@ -204,14 +238,16 @@ cron.schedule("0 14 * * *", async () => {
 });
 
 // 3. The Every-Minute Checker (For 10-min warning)
+
 cron.schedule("* * * * *", () => {
   const nowMs = Date.now();
   const TEN_MINS_MS = 10 * 60 * 1000;
+  const TWO_MINS_MS = 2 * 60 * 1000; // Added 2 mins
 
   todaysSchedules.forEach((schedule, index) => {
     const diff = schedule.outTimeMs - nowMs;
 
-    // If current time is within 10 mins before out-time, and we haven't sent the warning yet
+    // 10 mins before
     if (diff <= TEN_MINS_MS && diff > 0 && !schedule.sent10MinWarning) {
       sendTelegramMessage(
         schedule.chatId,
@@ -220,9 +256,17 @@ cron.schedule("* * * * *", () => {
       schedule.sent10MinWarning = true;
     }
 
-    // Clean up: If out-time has passed, remove from today's list
+    // 3. 2 mins before
+    if (diff <= TWO_MINS_MS && diff > 0 && !schedule.sent2MinWarning) {
+      sendTelegramMessage(
+        schedule.chatId,
+        `🚨 2 Minutes Left! Get ready to log out. Out-time is ${schedule.outTime}.`,
+      );
+      schedule.sent2MinWarning = true;
+    }
+
+    // Clean up
     if (diff < -60000) {
-      // 1 minute buffer
       todaysSchedules.splice(index, 1);
     }
   });
