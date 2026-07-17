@@ -12,7 +12,7 @@ const TelegramBot = TelegramBotModule.default || TelegramBotModule;
 const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
 let bot;
 if (telegramToken) {
-  bot = new TelegramBot(telegramToke);
+  bot = new TelegramBot(telegramToken);
   bot.on("polling_error", (error) =>
     console.error("Telegram Polling Error:", error.message),
   );
