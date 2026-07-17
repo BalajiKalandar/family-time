@@ -82,9 +82,9 @@ async function scrapeAttendance(username, password) {
       "xpath=/html/body/app-root/uas-portal/div/div/main/div/section/div[1]/o-auth/section/div/app-login/section/div/div/div/form/div[4]/button",
     );
 
-    await page.waitForTimeout(7000);
-    await page.goto(GREYTHR_URL);
     await page.waitForTimeout(5000);
+    await page.goto(GREYTHR_URL);
+    await page.waitForTimeout(4000);
 
     const inTimeXPath =
       "xpath=/html/body/app/ng-component/div/div/div[2]/div/gt-attendance-info-calendar/div[1]/div[2]/div[2]/div/div[5]/accordion/accordion-group/div/div[2]/div/table[1]/tbody/tr/td[1]/p[1]";
@@ -125,6 +125,10 @@ function calculateOutTime(inTime, status) {
 const app = express();
 app.use(cors());
 app.use(express.json());
+// 0. Homepage
+app.get("/", (req, res) => {
+  res.status(200).send("Backend is alive and running!");
+});
 
 // 1. Registration Endpoint (User uses this once)
 app.post("/api/register", async (req, res) => {
