@@ -170,6 +170,7 @@ app.post("/api/register", async (req, res) => {
           message: "Registered and tested successfully! Check your Telegram.",
         });
       } catch (scrapeErr) {
+        console.error("Immediate scrape failed:", scrapeErr.message);
         return res.json({
           success: true,
           message:
