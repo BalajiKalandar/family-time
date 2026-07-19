@@ -57,6 +57,7 @@ export default function App() {
   const [testNow, setTestNow] = useState(false);
   const [loading, setLoading] = useState(false);
   const [registered, setRegistered] = useState(false);
+  const [regHours, setRegHours] = useState(2.5);
   const [serverMessage, setServerMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -69,7 +70,7 @@ export default function App() {
     try {
       const res = await axios.post(
         "https://greyhr-backend.onrender.com/api/register",
-        { ...credentials, testNow },
+        { ...credentials, testNow, regHours },
       );
       if (res.data.success) {
         setServerMessage(res.data.message);
@@ -196,6 +197,20 @@ export default function App() {
               </span>
             </div>
 
+            <div className="relative group">
+              <label className="text-sm text-gray-400 ml-1 mb-1 block">
+                Your Regularization Deduction Hours
+              </label>
+              <select
+                className="w-full px-4 py-3.5 bg-gray-900/50 rounded-xl border border-gray-700 outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all text-gray-200"
+                value={regHours}
+                onChange={(e) => setRegHours(parseFloat(e.target.value))}
+              >
+                <option value="2.5">2.5 Hours (7 hrs required)</option>
+                <option value="2">2 Hours (7.5 hrs required)</option>
+                <option value="1.5">1.5 Hours (8 hrs required)</option>
+              </select>
+            </div>
             {/* Submit Button */}
             <motion.button
               whileHover={{ scale: loading ? 1 : 1.02 }}
