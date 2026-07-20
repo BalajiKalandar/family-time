@@ -130,32 +130,55 @@ async function scrapeAttendance(username, password) {
       console.log("Swipes click skipped (will read hidden DOM instead).");
     }
 
-    let inTime = null;
-
     // Regex to match "08:41:16 am" or "08:41 am"
-    const timeRegexStr = "\\d{1,2}:\\d{2}(:\\d{2})?\\s*[ap]m";
+    let inTime = null;
 
     for (let i = 0; i < 4; i++) {
       console.log(`[${username}] Attempt ${i + 1} to find In-Time...`);
       try {
-        // We use 'attached' instead of 'visible'!
-        // This finds the time even if the accordion is collapsed and hiding it.
-        const timeElement = page.locator(`text=/${timeRegexStr}/i`).first();
-        await timeElement.waitFor({ state: "attached", timeout: 5000 });
-        inTime = await timeElement.textContent({ timeout: 5000 });
+        // 1. Grab all text from the page body
+        const pageText = await page.evaluate(() => document.body.innerText);
+
+        // 2. Find ALL times on the page (e.g., "08:41:16 am", "01:30 pm")
+        const allTimes = pageText.match(/\d{1,2}:\d{2}(:\d{2})?\s*[ap]m/gi);
+
+        if (allTimes && allTimes.length > 0) {
+          // 3. Convert all times to total minutes from 00:00 to find the earliest one
+          let earliestMinutes = 9999;
+          let earliestTimeStr = "";
+
+          allTimes.forEach((t) => {
+            let [time, modifier] = t.toLowerCase().split(" ");
+            let [hours, minutes] = time.split(":");
+            hours = parseInt(hours);
+            minutes = parseInt(minutes);
+
+            if (modifier === "pm" && hours !== 12) hours += 12;
+            if (modifier === "am" && hours === 12) hours = 0;
+
+            let totalMinutes = hours * 60 + minutes;
+            if (totalMinutes < earliestMinutes) {
+              earliestMinutes = totalMinutes;
+              earliestTimeStr = t; // Keep the original string format
+            }
+          });
+
+          if (earliestTimeStr) {
+            inTime = earliestTimeStr.trim();
+          }
+        }
       } catch (e) {
         // retry
       }
 
       if (inTime && inTime.match(/\d{1,2}:\d{2}/)) {
         console.log(
-          `[${username}] Found In-Time successfully: ${inTime.trim()}`,
+          `[${username}] Found Morning In-Time successfully: ${inTime}`,
         );
         break; // Exit loop if found
       }
       await page.waitForTimeout(3000);
     }
-
     const attendanceStatus = "Normal";
 
     if (!inTime || !inTime.match(/\d{1,2}:\d{2}/)) {
