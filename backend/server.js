@@ -12,7 +12,7 @@ const TelegramBot = TelegramBotModule.default || TelegramBotModule;
 const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
 let bot;
 if (telegramToken) {
-  bot = new TelegramBot(telegramToken, { polling: true });
+  bot = new TelegramBot(telegramToken);
   bot.on("polling_error", (error) =>
     console.error("Telegram Polling Error:", error.message),
   );
@@ -114,57 +114,34 @@ async function scrapeAttendance(username, password) {
     // Wait for login to process
     await page.waitForTimeout(8000);
 
-    // 1. Go to the base URL first
-    console.log(`[${username}] Navigating to base URL...`);
-    await page.goto("https://ceinsys-tech.greythr.com/v3/portal/ess", {
-      waitUntil: "domcontentloaded",
-    });
-    await page.waitForTimeout(2000);
+    console.log(`[${username}] Navigating directly to Attendance Info URL...`);
+    await page.goto(GREYTHR_URL, { waitUntil: "domcontentloaded" });
 
-    // 2. Click "Attendance" on the sidebar
-    try {
-      console.log(`[${username}] Clicking 'Attendance' menu...`);
-      const attendanceMenu = page.locator("text=Attendance").first();
-      await attendanceMenu.waitFor({ state: "visible", timeout: 10000 });
-      await attendanceMenu.click();
-      await page.waitForTimeout(1500); // Wait for dropdown animation
-    } catch (e) {
-      console.log("Attendance menu click skipped (might already be expanded).");
-    }
+    // Give the Angular SPA plenty of time to render backend data on slow cloud servers
+    await page.waitForTimeout(8000);
 
-    // 3. Click "Attendance Info" from the expanded menu
+    // Try to click Swipes just in case, but don't crash if it fails
     try {
-      console.log(`[${username}] Clicking 'Attendance Info'...`);
-      const attendanceInfoLink = page.locator("text=Attendance Info").first();
-      await attendanceInfoLink.waitFor({ state: "visible", timeout: 10000 });
-      await attendanceInfoLink.click();
-      await page.waitForTimeout(3000); // Wait for the right-side panel to load
+      console.log(`[${username}] Trying to click Swipes...`);
+      const swipeBtn = page.getByText(/Swipe/i).first();
+      await swipeBtn.click({ timeout: 3000 });
+      await page.waitForTimeout(2000);
     } catch (e) {
-      console.log("Attendance Info link click skipped.");
-    }
-
-    // 4. Click the "Swipes" accordion/button on the right side
-    try {
-      console.log(`[${username}] Clicking 'Swipes' accordion...`);
-      const swipeAccordion = page.locator("text=/^Swipe/i").first();
-      await swipeAccordion.waitFor({ state: "visible", timeout: 10000 });
-      await swipeAccordion.click();
-      await page.waitForTimeout(1500); // Wait for table to load
-    } catch (e) {
-      console.log("Swipes accordion click skipped (might already be open).");
+      console.log("Swipes click skipped (will read hidden DOM instead).");
     }
 
     let inTime = null;
 
-    // 5. Regex to match time like "08:41:16 am" or "08:41 am"
+    // Regex to match "08:41:16 am" or "08:41 am"
     const timeRegexStr = "\\d{1,2}:\\d{2}(:\\d{2})?\\s*[ap]m";
 
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       console.log(`[${username}] Attempt ${i + 1} to find In-Time...`);
       try {
-        // Find the first element on the page matching the time regex
+        // We use 'attached' instead of 'visible'!
+        // This finds the time even if the accordion is collapsed and hiding it.
         const timeElement = page.locator(`text=/${timeRegexStr}/i`).first();
-        await timeElement.waitFor({ state: "visible", timeout: 5000 });
+        await timeElement.waitFor({ state: "attached", timeout: 5000 });
         inTime = await timeElement.textContent({ timeout: 5000 });
       } catch (e) {
         // retry
@@ -174,17 +151,16 @@ async function scrapeAttendance(username, password) {
         console.log(
           `[${username}] Found In-Time successfully: ${inTime.trim()}`,
         );
-        break; // Exit loop if found a valid time format
+        break; // Exit loop if found
       }
-      await page.waitForTimeout(3000); // Wait 3s and try again
+      await page.waitForTimeout(3000);
     }
 
     const attendanceStatus = "Normal";
 
     if (!inTime || !inTime.match(/\d{1,2}:\d{2}/)) {
-      // Take a screenshot to help debug if it STILL fails
       await page.screenshot({ path: `error-${username}.png` });
-      throw new Error("Could not find In-Time in the Swipes table.");
+      throw new Error("Could not find In-Time in the DOM.");
     }
 
     await browser.close();
