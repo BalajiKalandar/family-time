@@ -111,83 +111,102 @@ async function scrapeAttendance(username, password) {
       "xpath=/html/body/app-root/uas-portal/div/div/main/div/section/div[1]/o-auth/section/div/app-login/section/div/div/div/form/div[4]/button",
     );
 
-    // Wait for login to process
     await page.waitForTimeout(8000);
 
-    console.log(`[${username}] Navigating directly to Attendance Info URL...`);
+    console.log(`[${username}] Navigating to Attendance Info URL...`);
     await page.goto(GREYTHR_URL, { waitUntil: "domcontentloaded" });
-
-    // Give the Angular SPA plenty of time to render backend data on slow cloud servers
     await page.waitForTimeout(8000);
 
-    // Try to click Swipes just in case, but don't crash if it fails
+    // 1. Try clicking "Session Timing" or "Session Details"
     try {
-      console.log(`[${username}] Trying to click Swipes...`);
-      const swipeBtn = page.getByText(/Swipe/i).first();
-      await swipeBtn.click({ timeout: 3000 });
+      console.log(`[${username}] Trying to click Session Details...`);
+      const sessionBtn = page
+        .locator("text=/Session Detail|Session Timing/i")
+        .first();
+      await sessionBtn.click({ timeout: 5000 });
       await page.waitForTimeout(2000);
     } catch (e) {
-      console.log("Swipes click skipped (will read hidden DOM instead).");
+      console.log("Session Details not found/clicked.");
     }
 
-    // Regex to match "08:41:16 am" or "08:41 am"
     let inTime = null;
+    const timeRegex = /\d{1,2}:\d{2}(:\d{2})?\s*[ap]m/gi;
 
-    for (let i = 0; i < 4; i++) {
-      console.log(`[${username}] Attempt ${i + 1} to find In-Time...`);
-      try {
-        // 1. Grab all text from the page body
-        const pageText = await page.evaluate(() => document.body.innerText);
+    // 2. Helper function to search page for time
+    const searchPageForTime = async () => {
+      const pageText = await page.evaluate(() => document.body.innerText);
 
-        // 2. Find ALL times on the page (e.g., "08:41:16 am", "01:30 pm")
-        const allTimes = pageText.match(/\d{1,2}:\d{2}(:\d{2})?\s*[ap]m/gi);
+      // LOG WHAT PLAYWRIGHT SEES (First 300 chars)
+      console.log(
+        `[${username}] Page text preview: ${pageText.substring(0, 300)}...`,
+      );
 
-        if (allTimes && allTimes.length > 0) {
-          // 3. Convert all times to total minutes from 00:00 to find the earliest one
-          let earliestMinutes = 9999;
-          let earliestTimeStr = "";
-
-          allTimes.forEach((t) => {
-            let [time, modifier] = t.toLowerCase().split(" ");
-            let [hours, minutes] = time.split(":");
-            hours = parseInt(hours);
-            minutes = parseInt(minutes);
-
-            if (modifier === "pm" && hours !== 12) hours += 12;
-            if (modifier === "am" && hours === 12) hours = 0;
-
-            let totalMinutes = hours * 60 + minutes;
-            if (totalMinutes < earliestMinutes) {
-              earliestMinutes = totalMinutes;
-              earliestTimeStr = t; // Keep the original string format
-            }
-          });
-
-          if (earliestTimeStr) {
-            inTime = earliestTimeStr.trim();
+      const allTimes = pageText.match(timeRegex);
+      if (allTimes && allTimes.length > 0) {
+        let earliestMinutes = 9999;
+        let earliestTimeStr = "";
+        allTimes.forEach((t) => {
+          let [time, modifier] = t.toLowerCase().split(" ");
+          let [hours, minutes] = time.split(":");
+          hours = parseInt(hours);
+          minutes = parseInt(minutes);
+          if (modifier === "pm" && hours !== 12) hours += 12;
+          if (modifier === "am" && hours === 12) hours = 0;
+          let totalMinutes = hours * 60 + minutes;
+          if (totalMinutes < earliestMinutes) {
+            earliestMinutes = totalMinutes;
+            earliestTimeStr = t;
           }
-        }
-      } catch (e) {
-        // retry
+        });
+        return earliestTimeStr.trim();
       }
+      return null;
+    };
 
-      if (inTime && inTime.match(/\d{1,2}:\d{2}/)) {
-        console.log(
-          `[${username}] Found Morning In-Time successfully: ${inTime}`,
-        );
-        break; // Exit loop if found
-      }
+    // 3. Attempt 1 & 2: Search after Session click
+    for (let i = 0; i < 2; i++) {
+      console.log(
+        `[${username}] Attempt ${i + 1} to find In-Time (Session)...`,
+      );
+      inTime = await searchPageForTime();
+      if (inTime) break;
       await page.waitForTimeout(3000);
     }
-    const attendanceStatus = "Normal";
 
-    if (!inTime || !inTime.match(/\d{1,2}:\d{2}/)) {
-      await page.screenshot({ path: `error-${username}.png` });
-      throw new Error("Could not find In-Time in the DOM.");
+    // 4. If still not found, try clicking "Swipes" and search again
+    if (!inTime) {
+      try {
+        console.log(`[${username}] Trying to click Swipes...`);
+        const swipeBtn = page.locator("text=/Swipe/i").first();
+        await swipeBtn.click({ timeout: 5000 });
+        await page.waitForTimeout(3000); // Wait for table to load after click
+
+        // Attempt 3 & 4: Search after Swipes click
+        for (let i = 0; i < 2; i++) {
+          console.log(
+            `[${username}] Attempt ${i + 3} to find In-Time (Swipes)...`,
+          );
+          inTime = await searchPageForTime();
+          if (inTime) break;
+          await page.waitForTimeout(3000);
+        }
+      } catch (e) {
+        console.log("Swipes click failed.");
+      }
     }
 
+    const attendanceStatus = "Normal";
+
+    if (!inTime) {
+      await page.screenshot({ path: `error-${username}.png` });
+      throw new Error(
+        "Could not find In-Time in DOM after trying both Session and Swipes.",
+      );
+    }
+
+    console.log(`[${username}] Found Morning In-Time successfully: ${inTime}`);
     await browser.close();
-    return { inTime: inTime.trim(), attendanceStatus };
+    return { inTime, attendanceStatus };
   } catch (error) {
     await browser.close();
     throw error;
