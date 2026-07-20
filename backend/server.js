@@ -111,35 +111,80 @@ async function scrapeAttendance(username, password) {
       "xpath=/html/body/app-root/uas-portal/div/div/main/div/section/div[1]/o-auth/section/div/app-login/section/div/div/div/form/div[4]/button",
     );
 
+    // Wait for login to process
     await page.waitForTimeout(8000);
 
-    console.log(`[${username}] Navigating to attendance page...`);
-    await page.goto(GREYTHR_URL, { waitUntil: "domcontentloaded" });
+    // 1. Go to the base URL first
+    console.log(`[${username}] Navigating to base URL...`);
+    await page.goto("https://ceinsys-tech.greythr.com/v3/portal/ess", {
+      waitUntil: "domcontentloaded",
+    });
+    await page.waitForTimeout(2000);
 
-    await page.waitForTimeout(5000);
+    // 2. Click "Attendance" on the sidebar
+    try {
+      console.log(`[${username}] Clicking 'Attendance' menu...`);
+      const attendanceMenu = page.locator("text=Attendance").first();
+      await attendanceMenu.waitFor({ state: "visible", timeout: 10000 });
+      await attendanceMenu.click();
+      await page.waitForTimeout(1500); // Wait for dropdown animation
+    } catch (e) {
+      console.log("Attendance menu click skipped (might already be expanded).");
+    }
 
-    const inTimeXPath =
-      "xpath=/html/body/app/ng-component/div/div/div[2]/div/gt-attendance-info-calendar/div[1]/div[2]/div[2]/div/div[5]/accordion/accordion-group/div/div[2]/div/table[1]/tbody/tr/td[1]/p[1]";
+    // 3. Click "Attendance Info" from the expanded menu
+    try {
+      console.log(`[${username}] Clicking 'Attendance Info'...`);
+      const attendanceInfoLink = page.locator("text=Attendance Info").first();
+      await attendanceInfoLink.waitFor({ state: "visible", timeout: 10000 });
+      await attendanceInfoLink.click();
+      await page.waitForTimeout(3000); // Wait for the right-side panel to load
+    } catch (e) {
+      console.log("Attendance Info link click skipped.");
+    }
+
+    // 4. Click the "Swipes" accordion/button on the right side
+    try {
+      console.log(`[${username}] Clicking 'Swipes' accordion...`);
+      const swipeAccordion = page.locator("text=/^Swipe/i").first();
+      await swipeAccordion.waitFor({ state: "visible", timeout: 10000 });
+      await swipeAccordion.click();
+      await page.waitForTimeout(1500); // Wait for table to load
+    } catch (e) {
+      console.log("Swipes accordion click skipped (might already be open).");
+    }
 
     let inTime = null;
 
+    // 5. Regex to match time like "08:41:16 am" or "08:41 am"
+    const timeRegexStr = "\\d{1,2}:\\d{2}(:\\d{2})?\\s*[ap]m";
+
     for (let i = 0; i < 3; i++) {
       console.log(`[${username}] Attempt ${i + 1} to find In-Time...`);
-      inTime = await page.textContent(inTimeXPath).catch(() => null);
-
-      if (inTime) {
-        console.log(`[${username}] Found In-Time successfully!`);
-        break;
+      try {
+        // Find the first element on the page matching the time regex
+        const timeElement = page.locator(`text=/${timeRegexStr}/i`).first();
+        await timeElement.waitFor({ state: "visible", timeout: 5000 });
+        inTime = await timeElement.textContent({ timeout: 5000 });
+      } catch (e) {
+        // retry
       }
-      await page.waitForTimeout(3000);
+
+      if (inTime && inTime.match(/\d{1,2}:\d{2}/)) {
+        console.log(
+          `[${username}] Found In-Time successfully: ${inTime.trim()}`,
+        );
+        break; // Exit loop if found a valid time format
+      }
+      await page.waitForTimeout(3000); // Wait 3s and try again
     }
 
     const attendanceStatus = "Normal";
 
-    if (!inTime) {
-      throw new Error(
-        "Could not find In-Time after multiple attempts. Page didn't load fully.",
-      );
+    if (!inTime || !inTime.match(/\d{1,2}:\d{2}/)) {
+      // Take a screenshot to help debug if it STILL fails
+      await page.screenshot({ path: `error-${username}.png` });
+      throw new Error("Could not find In-Time in the Swipes table.");
     }
 
     await browser.close();
@@ -149,17 +194,22 @@ async function scrapeAttendance(username, password) {
     throw error;
   }
 }
-
 function calculateOutTime(inTime, status) {
   let inDate = new Date();
+  // Split by space: ["08:41:16", "am"]
   let [time, modifier] = inTime.split(" ");
-  let [hours, minutes] = time.split(":");
-  if (modifier === "PM" && hours !== "12") hours = parseInt(hours) + 12;
-  if (modifier === "AM" && hours === "12") hours = "0";
+  // Split by colon: ["08", "41", "16"]
+  let timeParts = time.split(":");
+  let hours = timeParts[0];
+  let minutes = timeParts[1]; // We only need hours and minutes for calculation
+
+  if (modifier.toUpperCase() === "PM" && hours !== "12")
+    hours = parseInt(hours) + 12;
+  if (modifier.toUpperCase() === "AM" && hours === "12") hours = "0";
 
   inDate.setHours(parseInt(hours), parseInt(minutes), 0, 0);
 
-  let requiredHours = 9.5;
+  let requiredHours = 9.5; // Default 9 hrs 30 mins
   if (status.includes("Comp-off")) requiredHours = 8.5;
   if (status.includes("Regularization")) requiredHours = 7.0;
 
