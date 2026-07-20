@@ -105,93 +105,61 @@ async function scrapeAttendance(username, password) {
       waitUntil: "domcontentloaded",
     });
 
-    // Wait for username box just in case of redirect
+    // 1. Smart Login Logic (Fixes the OAuth redirect crash)
     await page.waitForSelector("#username", {
       state: "visible",
       timeout: 15000,
     });
 
     console.log(`[${username}] Filling credentials...`);
-    // Using the exact IDs that worked yesterday
     await page.fill("#username", username);
     await page.fill("#password", password);
 
-    // Using the exact XPath button that worked yesterday
+    // Click the Login button using the XPath that worked yesterday
     await page.click(
       "xpath=/html/body/app-root/uas-portal/div/div/main/div/section/div[1]/o-auth/section/div/app-login/section/div/div/div/form/div[4]/button",
     );
 
     console.log(`[${username}] Waiting for dashboard...`);
-    await page.waitForTimeout(10000); // Give it 10 seconds to login
+    await page.waitForTimeout(10000);
 
     // Check if Login was successful
     if (
       page.url().includes("login") ||
       page.url() === "https://ceinsys-tech.greythr.com/"
     ) {
-      // READ THE SCREEN so we know why it failed
       const pageText = await page.evaluate(() => document.body.innerText);
       console.error(
-        `[${username}] greyHR Login Screen says: ${pageText.substring(0, 500)}`,
+        `[${username}] greyHR Login Screen says: ${pageText.substring(0, 200)}`,
       );
-
       await page.screenshot({ path: `login-error-${username}.png` });
       throw new Error(
         "Login failed. Check Render logs to see what greyHR said.",
       );
     }
 
+    // 2. Yesterday's Working Scraping Logic
     console.log(
       `[${username}] Login successful! Navigating to Attendance Info...`,
     );
     await page.goto(GREYTHR_URL, { waitUntil: "domcontentloaded" });
+
+    // Wait for Angular SPA to render
     await page.waitForTimeout(8000);
 
-    // Try clicking "Swipes" accordion
-    try {
-      console.log(`[${username}] Trying to click Swipes...`);
-      const swipeBtn = page.locator("text=/Swipe/i").first();
-      await swipeBtn.click({ timeout: 5000 });
-      await page.waitForTimeout(3000);
-    } catch (e) {
-      console.log("Swipes click skipped.");
-    }
+    const inTimeXPath =
+      "xpath=/html/body/app/ng-component/div/div/div[2]/div/gt-attendance-info-calendar/div[1]/div[2]/div[2]/div/div[5]/accordion/accordion-group/div/div[2]/div/table[1]/tbody/tr/td[1]/p[1]";
 
     let inTime = null;
-    const timeRegex = /\d{1,2}:\d{2}(:\d{2})?\s*[ap]m/gi;
 
-    // Helper function to search page for earliest time
-    const searchPageForTime = async () => {
-      const pageText = await page.evaluate(() => document.body.innerText);
-      const allTimes = pageText.match(timeRegex);
-      if (allTimes && allTimes.length > 0) {
-        let earliestMinutes = 9999;
-        let earliestTimeStr = "";
-        allTimes.forEach((t) => {
-          let [time, modifier] = t.toLowerCase().split(" ");
-          let [hours, minutes] = time.split(":");
-          hours = parseInt(hours);
-          minutes = parseInt(minutes);
-          if (modifier === "pm" && hours !== 12) hours += 12;
-          if (modifier === "am" && hours === 12) hours = 0;
-          let totalMinutes = hours * 60 + minutes;
-          if (totalMinutes < earliestMinutes) {
-            earliestMinutes = totalMinutes;
-            earliestTimeStr = t;
-          }
-        });
-        return earliestTimeStr.trim();
-      }
-      return null;
-    };
-
-    // Search for time (up to 4 attempts)
-    for (let i = 0; i < 4; i++) {
+    // Retry mechanism: Try 3 times to find the element
+    for (let i = 0; i < 3; i++) {
       console.log(`[${username}] Attempt ${i + 1} to find In-Time...`);
-      inTime = await searchPageForTime();
-      if (inTime) {
+      inTime = await page.textContent(inTimeXPath).catch(() => null);
+
+      if (inTime && inTime.match(/\d{1,2}:\d{2}/)) {
         console.log(
-          `[${username}] Found Morning In-Time successfully: ${inTime}`,
+          `[${username}] Found In-Time successfully: ${inTime.trim()}`,
         );
         break;
       }
@@ -200,13 +168,13 @@ async function scrapeAttendance(username, password) {
 
     const attendanceStatus = "Normal";
 
-    if (!inTime) {
+    if (!inTime || !inTime.match(/\d{1,2}:\d{2}/)) {
       await page.screenshot({ path: `error-${username}.png` });
-      throw new Error("Could not find In-Time in DOM after logging in.");
+      throw new Error("Could not find In-Time using yesterday's XPath.");
     }
 
     await browser.close();
-    return { inTime, attendanceStatus };
+    return { inTime: inTime.trim(), attendanceStatus };
   } catch (error) {
     await browser.close();
     throw error;
