@@ -87,7 +87,6 @@ let todaysSchedules = [];
 // --- PLAYWRIGHT SCRAPING LOGIC ---
 const GREYTHR_URL =
   "https://ceinsys-tech.greythr.com/v3/portal/ess/attendance/attendance-info";
-
 async function scrapeAttendance(username, password) {
   const browser = await chromium.launch({
     headless: true,
@@ -100,47 +99,55 @@ async function scrapeAttendance(username, password) {
   const page = await context.newPage();
 
   try {
-    console.log(`[${username}] Logging into greyHR...`);
+    console.log(`[${username}] Navigating to greyHR login...`);
     await page.goto("https://ceinsys-tech.greythr.com/", {
       waitUntil: "domcontentloaded",
     });
 
-    await page.fill("#username", username);
-    await page.fill("#password", password);
-    await page.click(
-      "xpath=/html/body/app-root/uas-portal/div/div/main/div/section/div[1]/o-auth/section/div/app-login/section/div/div/div/form/div[4]/button",
-    );
+    // 1. Smart Login Logic
+    console.log(`[${username}] Filling credentials...`);
+    await page.getByPlaceholder(/username|login id/i).fill(username);
+    await page.getByPlaceholder(/password/i).fill(password);
 
+    // Click the Login button by its text (much more robust than XPath)
+    await page.getByRole("button", { name: /login/i }).click();
+
+    // Wait for login to process
     await page.waitForTimeout(8000);
 
-    console.log(`[${username}] Navigating to Attendance Info URL...`);
+    // 2. Check if Login was successful
+    if (
+      page.url().includes("login") ||
+      page.url() === "https://ceinsys-tech.greythr.com/"
+    ) {
+      await page.screenshot({ path: `login-error-${username}.png` });
+      throw new Error(
+        "Login failed. greyHR did not redirect to the dashboard. Check if credentials are correct or if greyHR is blocking the server.",
+      );
+    }
+
+    console.log(
+      `[${username}] Login successful! Navigating to Attendance Info...`,
+    );
     await page.goto(GREYTHR_URL, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(8000);
 
-    // 1. Try clicking "Session Timing" or "Session Details"
+    // 3. Try clicking "Swipes" accordion
     try {
-      console.log(`[${username}] Trying to click Session Details...`);
-      const sessionBtn = page
-        .locator("text=/Session Detail|Session Timing/i")
-        .first();
-      await sessionBtn.click({ timeout: 5000 });
-      await page.waitForTimeout(2000);
+      console.log(`[${username}] Trying to click Swipes...`);
+      const swipeBtn = page.locator("text=/Swipe/i").first();
+      await swipeBtn.click({ timeout: 5000 });
+      await page.waitForTimeout(3000); // Wait for table to load after click
     } catch (e) {
-      console.log("Session Details not found/clicked.");
+      console.log("Swipes click skipped (might already be open).");
     }
 
     let inTime = null;
     const timeRegex = /\d{1,2}:\d{2}(:\d{2})?\s*[ap]m/gi;
 
-    // 2. Helper function to search page for time
+    // 4. Helper function to search page for earliest time
     const searchPageForTime = async () => {
       const pageText = await page.evaluate(() => document.body.innerText);
-
-      // LOG WHAT PLAYWRIGHT SEES (First 300 chars)
-      console.log(
-        `[${username}] Page text preview: ${pageText.substring(0, 300)}...`,
-      );
-
       const allTimes = pageText.match(timeRegex);
       if (allTimes && allTimes.length > 0) {
         let earliestMinutes = 9999;
@@ -163,48 +170,26 @@ async function scrapeAttendance(username, password) {
       return null;
     };
 
-    // 3. Attempt 1 & 2: Search after Session click
-    for (let i = 0; i < 2; i++) {
-      console.log(
-        `[${username}] Attempt ${i + 1} to find In-Time (Session)...`,
-      );
+    // 5. Search for time (up to 4 attempts)
+    for (let i = 0; i < 4; i++) {
+      console.log(`[${username}] Attempt ${i + 1} to find In-Time...`);
       inTime = await searchPageForTime();
-      if (inTime) break;
-      await page.waitForTimeout(3000);
-    }
-
-    // 4. If still not found, try clicking "Swipes" and search again
-    if (!inTime) {
-      try {
-        console.log(`[${username}] Trying to click Swipes...`);
-        const swipeBtn = page.locator("text=/Swipe/i").first();
-        await swipeBtn.click({ timeout: 5000 });
-        await page.waitForTimeout(3000); // Wait for table to load after click
-
-        // Attempt 3 & 4: Search after Swipes click
-        for (let i = 0; i < 2; i++) {
-          console.log(
-            `[${username}] Attempt ${i + 3} to find In-Time (Swipes)...`,
-          );
-          inTime = await searchPageForTime();
-          if (inTime) break;
-          await page.waitForTimeout(3000);
-        }
-      } catch (e) {
-        console.log("Swipes click failed.");
+      if (inTime) {
+        console.log(
+          `[${username}] Found Morning In-Time successfully: ${inTime}`,
+        );
+        break;
       }
+      await page.waitForTimeout(3000);
     }
 
     const attendanceStatus = "Normal";
 
     if (!inTime) {
       await page.screenshot({ path: `error-${username}.png` });
-      throw new Error(
-        "Could not find In-Time in DOM after trying both Session and Swipes.",
-      );
+      throw new Error("Could not find In-Time in DOM after logging in.");
     }
 
-    console.log(`[${username}] Found Morning In-Time successfully: ${inTime}`);
     await browser.close();
     return { inTime, attendanceStatus };
   } catch (error) {
