@@ -87,6 +87,7 @@ let todaysSchedules = [];
 // --- PLAYWRIGHT SCRAPING LOGIC ---
 const GREYTHR_URL =
   "https://ceinsys-tech.greythr.com/v3/portal/ess/attendance/attendance-info";
+
 async function scrapeAttendance(username, password) {
   const browser = await chromium.launch({
     headless: true,
@@ -100,52 +101,55 @@ async function scrapeAttendance(username, password) {
 
   try {
     console.log(`[${username}] Navigating to greyHR login...`);
+    // networkidle waits for all redirects to finish!
     await page.goto("https://ceinsys-tech.greythr.com/", {
-      waitUntil: "domcontentloaded",
+      waitUntil: "networkidle",
     });
 
-    // 1. Smart Login Logic
+    // Wait for the username input to actually be visible on the screen
+    console.log(`[${username}] Waiting for login form...`);
+    await page.waitForSelector("#username", {
+      state: "visible",
+      timeout: 15000,
+    });
+
     console.log(`[${username}] Filling credentials...`);
-    await page.getByPlaceholder(/username|login id/i).fill(username);
-    await page.getByPlaceholder(/password/i).fill(password);
+    await page.fill("#username", username);
+    await page.fill("#password", password);
 
-    // Click the Login button by its text (much more robust than XPath)
-    await page.getByRole("button", { name: /login/i }).click();
+    // Click the Login button
+    await page.click('button[type="submit"]');
 
-    // Wait for login to process
+    // Wait for login to process and dashboard to load
+    console.log(`[${username}] Waiting for dashboard...`);
     await page.waitForTimeout(8000);
 
-    // 2. Check if Login was successful
-    if (
-      page.url().includes("login") ||
-      page.url() === "https://ceinsys-tech.greythr.com/"
-    ) {
+    // Check if Login was successful
+    if (page.url().includes("login")) {
       await page.screenshot({ path: `login-error-${username}.png` });
-      throw new Error(
-        "Login failed. greyHR did not redirect to the dashboard. Check if credentials are correct or if greyHR is blocking the server.",
-      );
+      throw new Error("Login failed. Check if credentials are correct.");
     }
 
     console.log(
       `[${username}] Login successful! Navigating to Attendance Info...`,
     );
-    await page.goto(GREYTHR_URL, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(8000);
+    await page.goto(GREYTHR_URL, { waitUntil: "networkidle" });
+    await page.waitForTimeout(5000);
 
-    // 3. Try clicking "Swipes" accordion
+    // Try clicking "Swipes" accordion
     try {
       console.log(`[${username}] Trying to click Swipes...`);
       const swipeBtn = page.locator("text=/Swipe/i").first();
       await swipeBtn.click({ timeout: 5000 });
-      await page.waitForTimeout(3000); // Wait for table to load after click
+      await page.waitForTimeout(3000);
     } catch (e) {
-      console.log("Swipes click skipped (might already be open).");
+      console.log("Swipes click skipped.");
     }
 
     let inTime = null;
     const timeRegex = /\d{1,2}:\d{2}(:\d{2})?\s*[ap]m/gi;
 
-    // 4. Helper function to search page for earliest time
+    // Helper function to search page for earliest time
     const searchPageForTime = async () => {
       const pageText = await page.evaluate(() => document.body.innerText);
       const allTimes = pageText.match(timeRegex);
@@ -170,7 +174,7 @@ async function scrapeAttendance(username, password) {
       return null;
     };
 
-    // 5. Search for time (up to 4 attempts)
+    // Search for time (up to 4 attempts)
     for (let i = 0; i < 4; i++) {
       console.log(`[${username}] Attempt ${i + 1} to find In-Time...`);
       inTime = await searchPageForTime();
