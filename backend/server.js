@@ -101,40 +101,51 @@ async function scrapeAttendance(username, password) {
 
   try {
     console.log(`[${username}] Navigating to greyHR login...`);
-    // networkidle waits for all redirects to finish!
     await page.goto("https://ceinsys-tech.greythr.com/", {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
 
-    // Wait for the username input to actually be visible on the screen
-    console.log(`[${username}] Waiting for login form...`);
+    // Wait for username box just in case of redirect
     await page.waitForSelector("#username", {
       state: "visible",
       timeout: 15000,
     });
 
     console.log(`[${username}] Filling credentials...`);
+    // Using the exact IDs that worked yesterday
     await page.fill("#username", username);
     await page.fill("#password", password);
 
-    // Click the Login button
-    await page.click('button[type="submit"]');
+    // Using the exact XPath button that worked yesterday
+    await page.click(
+      "xpath=/html/body/app-root/uas-portal/div/div/main/div/section/div[1]/o-auth/section/div/app-login/section/div/div/div/form/div[4]/button",
+    );
 
-    // Wait for login to process and dashboard to load
     console.log(`[${username}] Waiting for dashboard...`);
-    await page.waitForTimeout(8000);
+    await page.waitForTimeout(10000); // Give it 10 seconds to login
 
     // Check if Login was successful
-    if (page.url().includes("login")) {
+    if (
+      page.url().includes("login") ||
+      page.url() === "https://ceinsys-tech.greythr.com/"
+    ) {
+      // READ THE SCREEN so we know why it failed
+      const pageText = await page.evaluate(() => document.body.innerText);
+      console.error(
+        `[${username}] greyHR Login Screen says: ${pageText.substring(0, 500)}`,
+      );
+
       await page.screenshot({ path: `login-error-${username}.png` });
-      throw new Error("Login failed. Check if credentials are correct.");
+      throw new Error(
+        "Login failed. Check Render logs to see what greyHR said.",
+      );
     }
 
     console.log(
       `[${username}] Login successful! Navigating to Attendance Info...`,
     );
-    await page.goto(GREYTHR_URL, { waitUntil: "networkidle" });
-    await page.waitForTimeout(5000);
+    await page.goto(GREYTHR_URL, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(8000);
 
     // Try clicking "Swipes" accordion
     try {
