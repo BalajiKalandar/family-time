@@ -55,7 +55,7 @@ mongoose
   .then(() => console.log("✅ MongoDB Connected"))
   .catch((err) => console.error(err));
 
-// User Schema
+// User Schema (Added Productivity Fields)
 const userSchema = new mongoose.Schema({
   greythrUsername: String,
   greyhrPassword: String,
@@ -63,6 +63,22 @@ const userSchema = new mongoose.Schema({
   regularizationHours: { type: Number, default: 0 },
   regularizationCount: { type: Number, default: 0 },
   cycleEndDate: { type: Date, default: null },
+
+  // NEW PRODUCTIVITY FIELDS
+  shiftStart: { type: String, default: "09:30" }, // Format: "HH:mm"
+  currentTopic: {
+    name: String,
+    startDate: Date,
+  },
+  topicHistory: [
+    {
+      name: String,
+      startDate: Date,
+      endDate: Date,
+      totalDays: Number,
+    },
+  ],
+  lastReminderKey: String, // Prevents double-sending reminders
 });
 const User = mongoose.model("User", userSchema);
 
@@ -81,7 +97,6 @@ function getUpcoming14th() {
 }
 
 // --- HELPER: BULLETPROOF IST TIMESTAMP CALCULATOR ---
-// This converts "05:43 PM" into a UTC millisecond timestamp assuming the time is in IST.
 function getISTTimestamp(timeStr) {
   let [time, modifier] = timeStr.split(" ");
   let [hours, minutes] = time.split(":");
@@ -91,7 +106,6 @@ function getISTTimestamp(timeStr) {
   if (modifier.toUpperCase() === "PM" && hours !== 12) hours += 12;
   if (modifier.toUpperCase() === "AM" && hours === 12) hours = 0;
 
-  // IST is UTC + 5 hours 30 minutes. So UTC is IST minus 5 hours 30 mins.
   let utcHours = hours - 5;
   let utcMinutes = minutes - 30;
 
@@ -307,12 +321,17 @@ bot.on("message", async (msg) => {
   if (text === "/start" || text === "/help") {
     bot.sendMessage(
       chatId,
-      "Hello! I am your greyHR assistant. Here are the commands you can use:\n\n" +
-        "🟢 `/help` - Show this help message.\n" +
-        "🟢 `/check` - Instantly check your standard Out-Time (9.5 hours) without waiting for 2:00 PM.\n" +
-        "🟢 `/compoff` - Use this if you are working on a weekend/holiday. Calculates 8.5 hours.\n" +
-        "🟢 `/regularize` - Apply a regularization for today. Calculates 9.5 hours minus your allowed deduction.\n" +
-        "🟢 `/status` - Check your remaining regularization count for this cycle.",
+      "Hello! I am your greyHR & Dynamic Productivity assistant.\n\n" +
+        "*Attendance Commands:*\n" +
+        "🟢 `/check` - Check standard Out-Time (9.5 hrs).\n" +
+        "🟢 `/compoff` - Calculate 8.5 hrs (Weekend/Holiday).\n" +
+        "🟢 `/regularize` - Apply regularization (9.5 - deduction).\n" +
+        "🟢 `/status` - Check regularization count.\n\n" +
+        "*Productivity Commands:*\n" +
+        "🟢 `/setshift HH:mm` - Set your daily start time (e.g., `/setshift 09:30`).\n" +
+        "🟢 `/settopic <Name>` - Start a multi-day topic (e.g., `/settopic React`).\n" +
+        "🟢 `/donetopic` - Finish topic & calculate days taken.\n" +
+        "🟢 `/history` - View completed topics and days taken.",
       { parse_mode: "Markdown" },
     );
   }
@@ -364,7 +383,7 @@ bot.on("message", async (msg) => {
       );
 
       const outTime = calculateOutTime(inTime, attendanceStatus);
-      const outTimeMs = getISTTimestamp(outTime); // FIXED TIMEZONE MATH
+      const outTimeMs = getISTTimestamp(outTime);
 
       todaysSchedules = todaysSchedules.filter((s) => s.chatId !== chatId);
       todaysSchedules.push({
@@ -423,7 +442,7 @@ bot.on("message", async (msg) => {
         minute: "2-digit",
       });
 
-      const outTimeMs = getISTTimestamp(outTime); // FIXED TIMEZONE MATH
+      const outTimeMs = getISTTimestamp(outTime);
 
       todaysSchedules = todaysSchedules.filter((s) => s.chatId !== chatId);
       todaysSchedules.push({
@@ -496,7 +515,7 @@ bot.on("message", async (msg) => {
         minute: "2-digit",
       });
 
-      const outTimeMs = getISTTimestamp(outTime); // FIXED TIMEZONE MATH
+      const outTimeMs = getISTTimestamp(outTime);
 
       todaysSchedules = todaysSchedules.filter((s) => s.chatId !== chatId);
       todaysSchedules.push({
@@ -523,6 +542,116 @@ bot.on("message", async (msg) => {
       );
     }
   }
+
+  // --- DYNAMIC PRODUCTIVITY COMMANDS ---
+
+  // 1. Set Shift Start Time
+  if (text.startsWith("/setshift")) {
+    const args = msg.text.split(" ");
+    if (args.length !== 2 || !args[1].match(/^\d{2}:\d{2}$/)) {
+      return bot.sendMessage(
+        chatId,
+        "Usage: `/setshift HH:mm`\nExample: `/setshift 09:30` or `/setshift 08:00`",
+        { parse_mode: "Markdown" },
+      );
+    }
+
+    let user = await User.findOne({ telegramChatId: chatId });
+    if (!user)
+      return bot.sendMessage(
+        chatId,
+        "❌ Please register on the web app first.",
+      );
+
+    user.shiftStart = args[1];
+    await user.save();
+
+    bot.sendMessage(
+      chatId,
+      `✅ Shift start set to ${args[1]}. Your daily reminders will automatically adjust to this time.`,
+    );
+  }
+
+  // 2. Set a multi-day topic
+  if (text.startsWith("/settopic")) {
+    const args = msg.text.split(" ");
+    if (args.length < 2) {
+      return bot.sendMessage(
+        chatId,
+        "Usage: `/settopic <Topic Name>`\nExample: `/settopic React Hooks`",
+        { parse_mode: "Markdown" },
+      );
+    }
+
+    const topicName = args.slice(1).join(" ");
+    let user = await User.findOne({ telegramChatId: chatId });
+    if (!user) return bot.sendMessage(chatId, "❌ Please register first.");
+
+    if (user.currentTopic && user.currentTopic.name) {
+      return bot.sendMessage(
+        chatId,
+        `⚠️ You are already learning *${user.currentTopic.name}*. Type /donetopic to finish it first.`,
+        { parse_mode: "Markdown" },
+      );
+    }
+
+    user.currentTopic = { name: topicName, startDate: new Date() };
+    await user.save();
+
+    bot.sendMessage(
+      chatId,
+      `📚 *Topic Started!*\nTopic: ${topicName}\nStart Date: ${new Date().toDateString()}\n\nI will remind you daily. Type /donetopic when you finish it.`,
+      { parse_mode: "Markdown" },
+    );
+  }
+
+  // 3. Finish topic and calculate days taken
+  if (text === "/donetopic") {
+    let user = await User.findOne({ telegramChatId: chatId });
+    if (!user || !user.currentTopic || !user.currentTopic.name) {
+      return bot.sendMessage(
+        chatId,
+        "❌ You don't have an active topic. Use /settopic to start one.",
+      );
+    }
+
+    const endDate = new Date();
+    const diffTime = Math.abs(endDate - user.currentTopic.startDate);
+    const totalDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    user.topicHistory.push({
+      name: user.currentTopic.name,
+      startDate: user.currentTopic.startDate,
+      endDate: endDate,
+      totalDays: totalDays,
+    });
+
+    const finishedTopicName = user.currentTopic.name;
+    user.currentTopic = null;
+    await user.save();
+
+    bot.sendMessage(
+      chatId,
+      `🎉 *Topic Completed!*\nTopic: ${finishedTopicName}\nTotal Days Taken: ${totalDays} days.\n\nSaved to your history. Ready for the next topic!`,
+      { parse_mode: "Markdown" },
+    );
+  }
+
+  // 4. View Topic History
+  if (text === "/history") {
+    let user = await User.findOne({ telegramChatId: chatId });
+    if (!user) return bot.sendMessage(chatId, "❌ Please register first.");
+
+    let historyText = "📊 *Topic History:*\n\n";
+    if (user.topicHistory.length === 0) {
+      historyText += "No topics completed yet.";
+    } else {
+      user.topicHistory.forEach((t, i) => {
+        historyText += `${i + 1}. *${t.name}* - ${t.totalDays} days\n`;
+      });
+    }
+    bot.sendMessage(chatId, historyText, { parse_mode: "Markdown" });
+  }
 });
 
 // --- CRON JOBS ---
@@ -543,7 +672,7 @@ cron.schedule(
           decryptedPassword,
         );
         const outTime = calculateOutTime(inTime, attendanceStatus);
-        const outTimeMs = getISTTimestamp(outTime); // FIXED TIMEZONE MATH
+        const outTimeMs = getISTTimestamp(outTime);
 
         todaysSchedules.push({
           chatId: user.telegramChatId,
@@ -575,12 +704,14 @@ cron.schedule(
   },
 );
 
-// The Every-Minute Checker (Runs in UTC, but compares UTC timestamps perfectly)
-cron.schedule("* * * * *", () => {
+// The Every-Minute Checker (Out-Time Warnings + Dynamic Schedule Reminders)
+cron.schedule("* * * * *", async () => {
+  const now = new Date();
   const nowMs = Date.now();
   const TEN_MINS_MS = 10 * 60 * 1000;
   const TWO_MINS_MS = 2 * 60 * 1000;
 
+  // 1. Out-Time Warnings Logic
   todaysSchedules.forEach((schedule, index) => {
     const diff = schedule.outTimeMs - nowMs;
 
@@ -602,6 +733,46 @@ cron.schedule("* * * * *", () => {
 
     if (diff < -60000) {
       todaysSchedules.splice(index, 1);
+    }
+  });
+
+  // 2. Dynamic Schedule Reminders Logic
+  const utcMins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const istMins = (utcMins + 330) % 1440; // Convert UTC to IST minutes
+
+  const scheduleOffsets = [
+    { offset: 0, msg: "🚀 Shift Started! Time for Udemy Course." },
+    { offset: 60, msg: "⏰ Udemy done. Switch to Company Project Work." },
+    { offset: 150, msg: "⏰ Break time! Stretch & Hydrate (15 mins)." },
+    { offset: 165, msg: "⏰ Break over. Back to Company Project Work." },
+    { offset: 270, msg: "⏰ Lunch time! (30 mins)." },
+    { offset: 300, msg: "⏰ Lunch over. Switch to DevOps Learning." },
+    { offset: 390, msg: "⏰ Break time! Reset (15 mins)." },
+    { offset: 405, msg: "⏰ Break over. Switch to Other Projects." },
+    { offset: 495, msg: "⏰ Pre-meal snack / Gym prep (15 mins)." },
+    { offset: 510, msg: "⏰ Snack over. Switch to DevOps Practice." },
+    { offset: 570, msg: "🎉 Shift Complete! Great job today." },
+  ];
+
+  const todayKey = `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}`;
+  const users = await User.find({});
+
+  users.forEach(async (user) => {
+    if (!user.shiftStart) return;
+    const [sh, sm] = user.shiftStart.split(":").map(Number);
+    const shiftStartMins = sh * 60 + sm;
+
+    let diff = istMins - shiftStartMins;
+    if (diff < 0) diff += 1440; // Handle overnight edge case
+
+    const reminder = scheduleOffsets.find((r) => r.offset === diff);
+    if (reminder) {
+      const key = `${todayKey}-${diff}`;
+      if (user.lastReminderKey !== key) {
+        user.lastReminderKey = key;
+        await user.save();
+        sendTelegramMessage(user.telegramChatId, reminder.msg);
+      }
     }
   });
 });
